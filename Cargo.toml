@@ -1,0 +1,8 @@
+[package]
+name = "twiga-shell"
+version = "0.1.0"
+authors = ["Joel Braun <joel.m.braun33@gmail.com>"]
+[dependencies]
+rustc-serialize = "0.3"
+rust-crypto = "^0.2"
+
